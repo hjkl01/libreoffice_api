@@ -1,6 +1,6 @@
 FROM rust:1-bookworm AS builder
 WORKDIR /app
-COPY Cargo.toml Cargo.lock* ./
+COPY Cargo.toml ./
 COPY src ./src
 RUN cargo build --release
 
@@ -14,6 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     fontconfig \
     fonts-dejavu \
     fonts-liberation \
