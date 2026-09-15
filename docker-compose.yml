@@ -1,0 +1,13 @@
+services:
+  libreoffice-api:
+    build: .
+    image: libreoffice-api:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      LO_MAX_CONCURRENCY: "2"
+      MAX_UPLOAD_SIZE: "104857600"
+      CONVERSION_TIMEOUT_SECS: "300"
+      RUST_LOG: "info"
