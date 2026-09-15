@@ -12,9 +12,12 @@ use uuid::Uuid;
 impl<E> From<E> for ApiError where E: Into<anyhow::Error> { fn from(err: E) -> Self { Self(err.into()) } }
 impl IntoResponse for ApiError { fn into_response(self) -> Response { error!(error = ?self.0, "conversion request failed"); (StatusCode::INTERNAL_SERVER_ERROR, format!("conversion failed: {}", self.0)).into_response() } }
 
-#[derive(ToSchema)] struct ConvertRequest {
-    #[schema(value_type = String, format = Binary, description = "Input file")] file: String,
-    #[schema(default = "pdf", example = "pdf", description = "Output format")] format: Option<String>,
+#[derive(ToSchema)]
+struct ConvertRequest {
+    #[schema(value_type = String, format = Binary)]
+    file: String,
+    #[schema(default = "pdf", example = "pdf")]
+    format: Option<String>,
 }
 #[derive(OpenApi)]
 #[openapi(info(title = "LibreOffice Conversion API", version = "0.1.0", description = "HTTP API for converting documents, spreadsheets and presentations through LibreOffice."), paths(health, convert), components(schemas(ConvertRequest)))]
