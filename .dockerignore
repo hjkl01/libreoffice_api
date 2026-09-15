@@ -1,0 +1,9 @@
+target
+.git
+.github
+Dockerfile
+README.md
+*.pptx
+*.ppt
+*.docx
+*.xlsx
