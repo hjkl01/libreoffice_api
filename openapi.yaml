@@ -1,0 +1,64 @@
+openapi: 3.0.3
+info:
+  title: LibreOffice Conversion API
+  description: HTTP API for converting documents, spreadsheets and presentations through LibreOffice.
+  version: 0.1.0
+servers:
+  - url: /
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+  /convert:
+    post:
+      summary: Convert a file
+      description: Upload a document and convert it to the requested LibreOffice output format.
+      operationId: convert
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Input file.
+                format:
+                  type: string
+                  default: pdf
+                  description: LibreOffice output format. Examples include pdf, docx, pptx, xlsx, odt, ods and odp.
+                  pattern: '^[A-Za-z0-9_-]{1,32}$'
+      responses:
+        '200':
+          description: Converted file
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid request
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Conversion failed
+          content:
+            text/plain:
+              schema:
+                type: string
+components: {}
