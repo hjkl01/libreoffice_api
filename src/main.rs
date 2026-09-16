@@ -174,8 +174,14 @@ async fn convert_inner(
         return Err(anyhow!("slide can only be used when converting to an image format").into());
     }
 
+    // LibreOffice's Impress image export does not reliably honor PageNumber.
+    // For a single-slide PNG, export exactly that page to PDF first and then
+    // rasterize the one-page PDF. This also avoids always getting slide 1.
+    let single_slide_png = format == "png" && slide.is_some();
+    let libreoffice_format = if single_slide_png { "pdf" } else { &format };
     let generated_name = format!("input.{format}");
     let generated_path = output_dir.join(&generated_name);
+    let libreoffice_generated_path = output_dir.join(format!("input.{libreoffice_format}"));
     let profile_url = format!("file://{}", profile_dir.to_string_lossy());
     let mut cmd = Command::new("libreoffice");
     cmd.arg("--headless")
@@ -184,14 +190,13 @@ async fn convert_inner(
         .arg("--nofirststartwizard")
         .arg(format!("-env:UserInstallation={profile_url}"));
 
-    if image_format && slide.is_some() {
-        let filter = format!("impress_{}_Export", image_filter_format(&format));
+    if single_slide_png {
         let params = format!(
-            "{{\"PageNumber\":{{\"type\":\"long\",\"value\":\"{}\"}}}}",
+            "{{\"PageRange\":{{\"type\":\"string\",\"value\":\"{}\"}}}}",
             slide.unwrap()
         );
         cmd.arg("--convert-to")
-            .arg(format!("{format}:{filter}:{params}"));
+            .arg(format!("pdf:impress_pdf_Export:{params}"));
     } else {
         cmd.arg("--convert-to").arg(&format);
     }
@@ -222,8 +227,48 @@ async fn convert_inner(
         .into());
     }
 
-    if !fs::try_exists(&generated_path).await.unwrap_or(false) {
+    if single_slide_png {
+        let pdf_path = &libreoffice_generated_path;
+        if !fs::try_exists(pdf_path).await.unwrap_or(false) {
+            return Err(anyhow!("LibreOffice completed but intermediate PDF was not created").into());
+        }
+
+        let slide_number = slide.unwrap();
+        info!(slide = slide_number, "rasterizing selected presentation slide");
+        let raster = timeout(
+            state.timeout,
+            Command::new("pdftoppm")
+                .arg("-f")
+                .arg("1")
+                .arg("-l")
+                .arg("1")
+                .arg("-singlefile")
+                .arg("-png")
+                .arg(pdf_path)
+                .arg(output_dir.join("input"))
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| anyhow!("PNG rasterization timed out"))??;
+        if !raster.status.success() {
+            let stderr = String::from_utf8_lossy(&raster.stderr);
+            let stdout = String::from_utf8_lossy(&raster.stdout);
+            return Err(anyhow!(
+                "pdftoppm exited with {}: {} {}",
+                raster.status,
+                stderr.trim(),
+                stdout.trim()
+            )
+            .into());
+        }
+        let _ = fs::remove_file(pdf_path).await;
+    } else if !fs::try_exists(&generated_path).await.unwrap_or(false) {
         return Err(anyhow!("LibreOffice completed but output file was not created").into());
+    }
+
+    if !fs::try_exists(&generated_path).await.unwrap_or(false) {
+        return Err(anyhow!("conversion completed but output file was not created").into());
     }
 
     let download_name = format!("{stem}.{format}");
@@ -245,16 +290,6 @@ async fn convert_inner(
         ))?,
     );
     Ok(response)
-}
-
-fn image_filter_format(format: &str) -> &'static str {
-    match format {
-        "png" => "png",
-        "jpg" | "jpeg" => "jpg",
-        "webp" => "webp",
-        "svg" => "svg",
-        _ => unreachable!(),
-    }
 }
 
 fn percent_encode_filename(name: &str) -> String {
