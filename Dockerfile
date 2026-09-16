@@ -43,6 +43,7 @@ RUN sed -i 's|deb.debian.org/debian|mirrors.tuna.tsinghua.edu.cn/debian|g; s|sec
   libreoffice-writer \
   libreoffice-calc \
   libreoffice-impress \
+  poppler-utils \
   && fc-cache -f -v \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
