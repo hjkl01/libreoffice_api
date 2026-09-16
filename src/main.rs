@@ -47,6 +47,8 @@ struct ConvertRequest {
     file: String,
     #[schema(default = "pdf", example = "pdf")]
     format: Option<String>,
+    #[schema(default = 1, example = 3)]
+    slide: Option<u32>,
 }
 #[derive(OpenApi)]
 #[openapi(
@@ -92,6 +94,7 @@ async fn convert(
     let _ = fs::remove_dir_all(&job_dir).await;
     result
 }
+
 async fn convert_inner(
     state: &AppState,
     multipart: &mut Multipart,
@@ -101,7 +104,9 @@ async fn convert_inner(
 ) -> Result<Response, ApiError> {
     let mut original_name = None;
     let mut format = String::from("pdf");
+    let mut slide = None;
     let mut input_path = None;
+
     while let Some(field) = multipart.next_field().await? {
         let name = field.name().unwrap_or("").to_owned();
         if name == "format" {
@@ -121,40 +126,86 @@ async fn convert_inner(
             if format.len() > 32 {
                 return Err(anyhow!("output format is too long").into());
             }
+        } else if name == "slide" {
+            let value = field.text().await?;
+            let value = value.trim();
+            let number = value
+                .parse::<u32>()
+                .map_err(|_| anyhow!("slide must be a positive integer"))?;
+            if number == 0 {
+                return Err(anyhow!("slide must be a positive integer").into());
+            }
+            slide = Some(number);
         } else if name == "file" {
             let filename = field.file_name().unwrap_or("input");
-            let safe_name = sanitize_filename(filename);
-            let path = input_dir.join(&safe_name);
+            let original_basename = Path::new(filename)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("input")
+                .to_owned();
+            let extension = Path::new(&original_basename)
+                .extension()
+                .and_then(|s| s.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("bin");
+            let temp_name = format!("input.{}", extension);
+            let path = input_dir.join(temp_name);
             let data = field.bytes().await?;
             if data.len() > state.max_upload_size {
                 return Err(anyhow!("uploaded file exceeds MAX_UPLOAD_SIZE").into());
             }
             fs::write(&path, &data).await?;
-            original_name = Some(safe_name);
+            original_name = Some(original_basename);
             input_path = Some(path);
         }
     }
+
     let input_path = input_path.ok_or_else(|| anyhow!("multipart field 'file' is required"))?;
     let original_name = original_name.unwrap_or_else(|| "input".into());
     let stem = Path::new(&original_name)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("output");
-    let expected = output_dir.join(format!("{stem}.{format}"));
+
+    let image_format = matches!(format.as_str(), "png" | "jpg" | "jpeg" | "webp" | "svg");
+    if slide.is_some() && !image_format {
+        return Err(anyhow!("slide can only be used when converting to an image format").into());
+    }
+
+    let generated_name = format!("input.{format}");
+    let generated_path = output_dir.join(&generated_name);
     let profile_url = format!("file://{}", profile_dir.to_string_lossy());
     let mut cmd = Command::new("libreoffice");
     cmd.arg("--headless")
         .arg("--nologo")
         .arg("--nodefault")
         .arg("--nofirststartwizard")
-        .arg(format!("-env:UserInstallation={profile_url}"))
-        .arg("--convert-to")
-        .arg(&format)
-        .arg("--outdir")
+        .arg(format!("-env:UserInstallation={profile_url}"));
+
+    if image_format && slide.is_some() {
+        let filter = format!("impress_{}_Export", image_filter_format(&format));
+        let params = format!(
+            "{{\"PageNumber\":{{\"type\":\"long\",\"value\":\"{}\"}}}}",
+            slide.unwrap()
+        );
+        cmd.arg("--convert-to")
+            .arg(format!("{format}:{filter}:{params}"));
+    } else {
+        cmd.arg("--convert-to").arg(&format);
+    }
+
+    cmd.arg("--outdir")
         .arg(output_dir)
         .arg(&input_path)
         .kill_on_drop(true);
-    info!(file = %original_name, format = %format, "starting LibreOffice conversion");
+    info!(
+        file = %original_name,
+        format = %format,
+        slide = ?slide,
+        "starting LibreOffice conversion"
+    );
+
     let output = timeout(state.timeout, cmd.output())
         .await
         .map_err(|_| anyhow!("LibreOffice conversion timed out"))??;
@@ -169,12 +220,19 @@ async fn convert_inner(
         )
         .into());
     }
-    if !fs::try_exists(&expected).await.unwrap_or(false) {
+
+    if !fs::try_exists(&generated_path).await.unwrap_or(false) {
         return Err(anyhow!("LibreOffice completed but output file was not created").into());
     }
-    let bytes = fs::read(&expected).await?;
-    let content_type = content_type_for(&format);
+
     let download_name = format!("{stem}.{format}");
+    let final_path = output_dir.join(&download_name);
+    if final_path != generated_path {
+        fs::rename(&generated_path, &final_path).await?;
+    }
+    let bytes = fs::read(&final_path).await?;
+    let content_type = content_type_for(&format);
+    let encoded_name = percent_encode_filename(&download_name);
     let mut response = Response::new(Body::from(bytes));
     response
         .headers_mut()
@@ -182,39 +240,68 @@ async fn convert_inner(
     response.headers_mut().insert(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!(
-            "attachment; filename=\"{}\"",
-            download_name.replace('"', "_")
+            "attachment; filename*=UTF-8''{encoded_name}"
         ))?,
     );
     Ok(response)
 }
+
+fn image_filter_format(format: &str) -> &'static str {
+    match format {
+        "png" => "png",
+        "jpg" | "jpeg" => "jpg",
+        "webp" => "webp",
+        "svg" => "svg",
+        _ => unreachable!(),
+    }
+}
+
+fn percent_encode_filename(name: &str) -> String {
+    let mut encoded = String::with_capacity(name.len());
+    for byte in name.as_bytes() {
+        if matches!(
+            *byte,
+            b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'!'
+                | b'#'
+                | b'$'
+                | b'&'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        ) {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(hex_digit(byte >> 4));
+            encoded.push(hex_digit(byte & 0x0f));
+        }
+    }
+    encoded
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'A' + value - 10) as char,
+        _ => unreachable!(),
+    }
+}
+
 fn env_usize(name: &str, default: usize) -> usize {
     env::var(name)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
 }
-fn sanitize_filename(name: &str) -> String {
-    let base = Path::new(name)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("input");
-    let safe: String = base
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if safe.is_empty() {
-        "input".into()
-    } else {
-        safe
-    }
-}
+
 fn content_type_for(format: &str) -> &'static str {
     match format {
         "pdf" => "application/pdf",
@@ -227,6 +314,10 @@ fn content_type_for(format: &str) -> &'static str {
         "odt" => "application/vnd.oasis.opendocument.text",
         "ods" => "application/vnd.oasis.opendocument.spreadsheet",
         "odp" => "application/vnd.oasis.opendocument.presentation",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
         "txt" => "text/plain; charset=utf-8",
         "html" | "htm" => "text/html; charset=utf-8",
         _ => "application/octet-stream",
