@@ -11,3 +11,9 @@ services:
       MAX_UPLOAD_SIZE: "104857600"
       CONVERSION_TIMEOUT_SECS: "300"
       RUST_LOG: "info"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
