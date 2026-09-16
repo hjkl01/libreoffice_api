@@ -11,4 +11,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 utoipa = { version = "5", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
+# Vendor Swagger UI assets so Docker builds do not need to download the
+# Swagger UI ZIP from GitHub during the utoipa-swagger-ui build script.
+utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
