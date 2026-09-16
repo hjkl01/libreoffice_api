@@ -41,6 +41,7 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[allow(dead_code)]
 #[derive(ToSchema)]
 struct ConvertRequest {
     #[schema(value_type = String, format = Binary)]
