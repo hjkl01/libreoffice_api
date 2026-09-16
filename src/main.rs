@@ -9,6 +9,7 @@ use axum::{
 };
 use std::{env, path::Path, sync::Arc, time::Duration};
 use tokio::{fs, process::Command, sync::Semaphore, time::timeout};
+use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
@@ -379,6 +380,23 @@ async fn main() -> Result<()> {
         .route("/convert", post(convert))
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(DefaultBodyLimit::max(max_upload_size))
+        .layer(
+            TraceLayer::new_for_http()
+                .on_request(|request: &axum::http::Request<Body>, _span| {
+                    info!(
+                        method = %request.method(),
+                        uri = %request.uri(),
+                        "request started"
+                    );
+                })
+                .on_response(|response: &Response<Body>, latency: Duration, _span| {
+                    info!(
+                        status = %response.status(),
+                        latency_ms = latency.as_millis(),
+                        "request finished"
+                    );
+                }),
+        )
         .with_state(state);
     let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
