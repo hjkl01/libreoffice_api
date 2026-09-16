@@ -74,11 +74,13 @@ async fn convert(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Response, ApiError> {
+    info!("conversion request received");
     let _permit = state
         .semaphore
         .acquire()
         .await
         .context("failed to acquire conversion slot")?;
+    info!("conversion slot acquired");
     let job_dir = env::temp_dir().join(format!("libreoffice-api-{}", Uuid::new_v4()));
     let profile_dir = job_dir.join("profile");
     let input_dir = job_dir.join("input");
@@ -175,9 +177,6 @@ async fn convert_inner(
         return Err(anyhow!("slide can only be used when converting to an image format").into());
     }
 
-    // LibreOffice's Impress image export does not reliably honor PageNumber.
-    // For a single-slide PNG, export exactly that page to PDF first and then
-    // rasterize the one-page PDF. This also avoids always getting slide 1.
     let single_slide_png = format == "png" && slide.is_some();
     let libreoffice_format = if single_slide_png { "pdf" } else { &format };
     let generated_name = format!("input.{format}");
@@ -380,23 +379,7 @@ async fn main() -> Result<()> {
         .route("/convert", post(convert))
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(DefaultBodyLimit::max(max_upload_size))
-        .layer(
-            TraceLayer::new_for_http()
-                .on_request(|request: &axum::http::Request<Body>, _span| {
-                    info!(
-                        method = %request.method(),
-                        uri = %request.uri(),
-                        "request started"
-                    );
-                })
-                .on_response(|response: &Response<Body>, latency: Duration, _span| {
-                    info!(
-                        status = %response.status(),
-                        latency_ms = latency.as_millis(),
-                        "request finished"
-                    );
-                }),
-        )
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
     let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
